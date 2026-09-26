@@ -12,7 +12,7 @@ import '../glass_surface.dart';
 /// backdrop-luminance vibrancy. Pure Flutter; pairs with glass_surface.dart.
 ///
 /// Behaviour (all learned the hard way — see reference/pitfalls.md):
-/// - one bubble slides behind the tabs: tap = 260ms ease-out slide, drag =
+/// - one bubble slides behind the tabs: tap = ~300ms spring slide, drag =
 ///   follows the finger exactly, release = snaps to the nearest tab taking
 ///   fling velocity into account
 /// - pressing anywhere swells the bubble 1.05x (observe-only Listener — the
@@ -51,8 +51,17 @@ class GlassNavBar extends StatefulWidget {
 }
 
 class _GlassNavBarState extends State<GlassNavBar>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
+  // TickerProviderStateMixin, NOT the single-ticker variant: this State owns
+  // two AnimationControllers (_bubbleX and _press), and
+  // SingleTickerProviderStateMixin asserts on the second one (debug builds
+  // crash on first frame; release silently runs on).
   late int _currentIndex = widget.currentIndex;
+
+  /// True between onHorizontalDragStart and its end/cancel. Gates
+  /// didUpdateWidget so a parent-driven index change can't yank the bubble
+  /// out from under the user's finger mid-drag.
+  bool _dragActive = false;
 
   /// Bubble position in alignment units: -1 = first tab, +1 = last tab.
   /// Managed by hand (not AnimatedAlign) so a drag can write the value
@@ -94,6 +103,21 @@ class _GlassNavBarState extends State<GlassNavBar>
     });
   }
 
+  @override
+  void didUpdateWidget(covariant GlassNavBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // The parent's index is the source of truth for WHAT is selected: page
+    // switches that didn't come from this bar (deep links, back button,
+    // state restore) must move the bubble and highlight too. Without this
+    // the bar silently keeps its own stale index forever.
+    if (widget.currentIndex != oldWidget.currentIndex &&
+        widget.currentIndex != _currentIndex &&
+        !_dragActive) {
+      _currentIndex = widget.currentIndex;
+      _springTo(_targetOf(_currentIndex, widget.tabs.length));
+    }
+  }
+
   Future<void> _sample() async {
     final boundary = widget.backdropKey.currentContext?.findRenderObject();
     if (boundary is! RenderRepaintBoundary || !boundary.attached) return;
@@ -104,7 +128,6 @@ class _GlassNavBarState extends State<GlassNavBar>
       final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
       image.dispose();
       if (data == null || !mounted) return;
-      if (!mounted) return;
       setState(() => _vibrancy += (_luminance(data.buffer.asUint8List()) - _vibrancy) * 0.5);
     } catch (_) {
       // Not painted yet / app backgrounded: skip this round.
@@ -174,16 +197,21 @@ class _GlassNavBarState extends State<GlassNavBar>
                 final unitsPerPx = 2 / constraints.maxWidth;
                 return GestureDetector(
                   onHorizontalDragStart: (_) {
+                    _dragActive = true;
                     _bubbleX.stop();
                   },
-                  onHorizontalDragUpdate: (details) => setState(() {
-                    _bubbleX.value = (_bubbleX.value +
-                            details.delta.dx * unitsPerPx)
-                        .clamp(-1.0, 1.0);
-                  }),
-                  onHorizontalDragCancel: () =>
-                      _springTo(_targetOf(_currentIndex, n)),
+                  onHorizontalDragUpdate: (details) =>
+                      _bubbleX.value = (_bubbleX.value +
+                              details.delta.dx * unitsPerPx)
+                          .clamp(-1.0, 1.0),
+                  onHorizontalDragCancel: () {
+                    _dragActive = false;
+                    // Whatever stole the pointer (dialog, system gesture),
+                    // the bubble must go home — see pitfalls.md #10.
+                    _springTo(_targetOf(_currentIndex, n));
+                  },
                   onHorizontalDragEnd: (details) {
+                    _dragActive = false;
                     final velocity =
                         details.velocity.pixelsPerSecond.dx * unitsPerPx;
                     // Fling projection: aim slightly past the release point.
@@ -197,37 +225,52 @@ class _GlassNavBarState extends State<GlassNavBar>
                   child: Stack(
                     children: [
                       Positioned.fill(
-                        child: Align(
-                          alignment: Alignment(
-                            _bubbleX.value.clamp(-1.0, 1.0),
-                            0,
-                          ),
-                          child: FractionallySizedBox(
-                            // heightFactor is mandatory: without it the bubble
-                            // collapses to zero height and "disappears".
-                            heightFactor: 1,
-                            widthFactor: 1 / n,
-                            child: Transform.scale(
-                              scale: 1 + 0.05 * _press.value,
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 6,
-                                ),
-                                child: DecoratedBox(
-                                  decoration: BoxDecoration(
-                                    color: Theme.of(context).brightness ==
-                                            Brightness.dark
-                                        ? Colors.white
-                                            .withValues(alpha: 0.08)
-                                        : Colors.black
-                                            .withValues(alpha: 0.06),
-                                    borderRadius: BorderRadius.circular(100),
-                                    border: Border.all(
-                                      color: Colors.white.withValues(
-                                        alpha: Theme.of(context).brightness ==
-                                                Brightness.dark
-                                            ? 0.35
-                                            : 0.85,
+                        // REGRESSION GUARD (pitfalls.md #10): the bubble is
+                        // driven by raw AnimationControllers, which repaint
+                        // NOTHING on their own. Everything reading a
+                        // controller value must sit inside this
+                        // AnimatedBuilder, or the bubble only moves when some
+                        // unrelated setState happens — it lags the highlight,
+                        // teleports on vibrancy ticks, and strands mid-bar
+                        // after a cancelled drag.
+                        child: AnimatedBuilder(
+                          animation: Listenable.merge([_bubbleX, _press]),
+                          builder: (context, _) => Align(
+                            key: const ValueKey('glass-bubble-align'),
+                            alignment: Alignment(
+                              _bubbleX.value.clamp(-1.0, 1.0),
+                              0,
+                            ),
+                            child: FractionallySizedBox(
+                              // heightFactor is mandatory: without it the
+                              // bubble collapses to zero height and
+                              // "disappears".
+                              heightFactor: 1,
+                              widthFactor: 1 / n,
+                              child: Transform.scale(
+                                scale: 1 + 0.05 * _press.value,
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                  ),
+                                  child: DecoratedBox(
+                                    decoration: BoxDecoration(
+                                      color: Theme.of(context).brightness ==
+                                              Brightness.dark
+                                          ? Colors.white
+                                              .withValues(alpha: 0.08)
+                                          : Colors.black
+                                              .withValues(alpha: 0.06),
+                                      borderRadius:
+                                          BorderRadius.circular(100),
+                                      border: Border.all(
+                                        color: Colors.white.withValues(
+                                          alpha:
+                                              Theme.of(context).brightness ==
+                                                      Brightness.dark
+                                                  ? 0.35
+                                                  : 0.85,
+                                        ),
                                       ),
                                     ),
                                   ),

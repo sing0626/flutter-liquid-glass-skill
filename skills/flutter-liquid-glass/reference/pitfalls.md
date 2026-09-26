@@ -113,3 +113,37 @@ so the stadium corners never clip it.
   glass bar is fine, a glass card per list row is a jank factory.
 - Skip the layer entirely for `blurSigma == 0` (check the flag, don't build a
   sigma-0 filter — that still costs a saveLayer).
+
+## 10. A spring with no listener repaints nothing (bubble strands / desyncs)
+
+`AnimationController.animateWith(...)` drives *values*, not *frames*. If your
+build method reads `controller.value` directly (e.g. `Align(alignment:
+Alignment(_bubbleX.value, 0))`) with no `AnimatedBuilder`/`ListenableBuilder`
+in between, the widget repaints **only when some unrelated `setState`
+happens** — a drag update, the 250ms vibrancy tick, any parent rebuild.
+
+Symptoms seen in a shipping app: the tab highlight switches instantly (its
+`setState` is right there in `onTap`) while the bubble lags behind, teleports
+in 250ms steps, or — worst case, when nothing else rebuilds (static page, a
+dialog opening that steals the pointer) — **freezes mid-way between two tabs
+for seconds or forever** after a drag is released or cancelled. It looks like
+render ghosting; it is just a widget that never rebuilds.
+
+Fix: everything reading a controller value goes inside
+`AnimatedBuilder(animation: Listenable.merge([_bubbleX, _press]), ...)`.
+Then a cancelled drag's spring home *actually animates*, and the bubble can
+never strand. Related hardening, same failure family:
+
+- the parent's `currentIndex` is the source of truth for what is selected —
+  implement `didUpdateWidget` to follow external index changes (deep links,
+  back button), or the bar keeps a stale private index forever;
+- drag state must end on EVERY exit path: `onHorizontalDragEnd` **and**
+  `onHorizontalDragCancel` (dialogs, system gestures steal the pointer).
+
+## 11. Two controllers ≠ `SingleTickerProviderStateMixin`
+
+The nav bar State owns two `AnimationController`s (bubble + press). With
+`SingleTickerProviderStateMixin` the second `createTicker` asserts — **debug
+builds crash on the first frame**; release strips the assert and runs on, so
+your only clue is that debug/profile never boots while release "works".
+Use `TickerProviderStateMixin` whenever a State owns more than one controller.

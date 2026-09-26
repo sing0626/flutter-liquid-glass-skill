@@ -112,6 +112,13 @@ GlassSurface(
 7. Transparency is a direction, not a setting: every scrim alpha in this skill
    is a parameter because real feedback is always "more transparent". Ship the
    knob (`enabled`, `blurSigma`, `vibrancy`) — do not hardcode taste.
+8. A raw `AnimationController` spring repaints nothing by itself. If the build
+   reads `controller.value` without an `AnimatedBuilder`, the bubble lags the
+   tab highlight, teleports on vibrancy ticks, or strands mid-bar after a
+   cancelled drag (dialog steals the pointer). Every controller reader goes in
+   `AnimatedBuilder(animation: Listenable.merge([...]))`; follow external
+   `currentIndex` changes in `didUpdateWidget`; and a State with two
+   controllers needs `TickerProviderStateMixin` (see pitfalls.md #10/#11).
 
 ## Platform notes
 
