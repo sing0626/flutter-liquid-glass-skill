@@ -3,19 +3,22 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
 
-/// Liquid-glass surface primitive — pure Flutter, no dependencies.
+/// Liquid-glass surface primitive — a faithful clone of the primitive that
+/// ships in a real production app (iterated through ~20 CI builds and daily
+/// driver use). Pure Flutter, no dependencies, no platform channels.
 ///
-/// Drop this file into `lib/ui/`. Everything is a parameter because glass taste
-/// is subjective: blur on/off, scrim depth, rim brightness, press physics.
+/// Drop this file into `lib/ui/`. Everything is a parameter because glass
+/// taste is subjective: blur on/off, scrim depth, rim brightness, press
+/// physics, solid fallback for a settings toggle.
 ///
 /// What it draws (bottom to top):
 /// 1. optional `BackdropFilter` blur of everything painted beneath it
-///    (blurSigma > 0; blurSigma == 0 skips the filter layer entirely — no
-///    saveLayer at all, for the "clear glass" tier)
+///    (`blurSigma > 0`; **`blurSigma == 0` skips the filter layer entirely** —
+///    no saveLayer at all; that is the "clear glass" tier the app settled on)
 /// 2. a near-transparent theme-aware scrim with a top-left glint
 /// 3. your [child]
-/// 4. an optional press overlay: spring scale-up + blur deepening + a radial
-///    glow that follows the pointer (observe-only — wrapped taps still work)
+/// 4. an optional press overlay: spring scale-up + a radial glow that follows
+///    the pointer (observe-only — wrapped taps still work)
 /// 5. a directional rim light via [GlassRimPainter] (bright top-left edge,
 ///    dark bottom-right), optionally with chromatic-aberration strokes
 ///
@@ -24,13 +27,19 @@ import 'package:flutter/physics.dart';
 ///   BoxDecoration (release mode silently paints a rectangle over the radius)
 /// - there is deliberately no BackdropFilter in the press overlay: a moving
 ///   lens ghosts one frame behind its rim and Transform-stretches its sample
+
+/// Values inlined from the shipping app's theme so this file stays
+/// self-contained (its `UniMailTokens`): solid fallback surfaces.
+const Color kGlassSurfaceCard = Color(0xFFFFFFFF);
+const Color kGlassSurfaceCardDark = Color(0xFF101F33);
+
 class GlassSurface extends StatefulWidget {
   const GlassSurface({
     super.key,
     required this.child,
-    this.borderRadius = 24,
+    this.borderRadius = 18,
     this.blurSigma = 18,
-    this.pressScale = 1.05,
+    this.pressScale = 1.03,
     this.vibrancy,
     this.tint,
     this.borderColor,
@@ -47,15 +56,15 @@ class GlassSurface extends StatefulWidget {
   final double pressScale;
   final double borderRadius;
 
+  /// Glass scrim override. Default: white glass in light mode, near-invisible
+  /// dark navy in dark mode (real users push transparency to the floor).
+  final Color? tint;
+
   /// Backdrop luminance signal in 0..1 (bright content behind -> higher).
   /// null = unknown, treated as neutral 0.5. Drives scrim depth, blur and rim
   /// brightness so the glass reads near-invisible over dark content and picks
   /// up contrast over bright content.
   final double? vibrancy;
-
-  /// Glass scrim override. Default: white glass in light mode, near-invisible
-  /// dark navy in dark mode (real users push transparency to the floor).
-  final Color? tint;
   final Color? borderColor;
   final BoxShadow? boxShadow;
 
@@ -86,7 +95,9 @@ class _GlassSurfaceState extends State<GlassSurface>
   Offset _touch = Offset.zero;
 
   void _animatePressTo(double target) {
-    _press.animateWith(SpringSimulation(_spring, _press.value, target, 0));
+    _press.animateWith(
+      SpringSimulation(_spring, _press.value, target, 0),
+    );
   }
 
   @override
@@ -100,14 +111,16 @@ class _GlassSurfaceState extends State<GlassSurface>
     final theme = Theme.of(context);
     final dark = theme.brightness == Brightness.dark;
     final radius = BorderRadius.circular(widget.borderRadius);
+
+    // vibrancy is already a 0 (dark) .. 1 (bright) signal.
     final t = (widget.vibrancy ?? 0.5).clamp(0.0, 1.0);
-    // Brighter backdrop -> deeper blur so colours melt together instead of
-    // fighting the labels.
+    // Brighter backdrop -> deeper blur (floats 12..24dp for the default 18)
+    // so colours melt together instead of fighting the labels.
     final effectiveBlur = lerpDouble(
       widget.blurSigma - 4,
       widget.blurSigma + 6,
       t,
-      )!.clamp(0.0, 40.0);
+    )!;
 
     Widget surface = Container(
       clipBehavior: Clip.antiAlias,
@@ -115,7 +128,7 @@ class _GlassSurfaceState extends State<GlassSurface>
         borderRadius: radius,
         color: widget.enabled
             ? null
-            : (dark ? const Color(0xFF101F33) : Colors.white),
+            : (dark ? kGlassSurfaceCardDark : kGlassSurfaceCard),
         boxShadow: widget.boxShadow == null ? null : [widget.boxShadow!],
       ),
       child: widget.enabled
@@ -126,43 +139,47 @@ class _GlassSurfaceState extends State<GlassSurface>
                 return LayoutBuilder(
                   builder: (context, constraints) {
                     Widget glass = DecoratedBox(
-                      // One gradient, two jobs: top-left glint + scrim.
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: _glassColors(dark, widget.tint, t),
-                          stops: const [0, 0.3],
+                        // One gradient, two jobs: top-left glint + scrim.
+                        // Dark-mode glint is smaller (too bright looks dirty
+                        // on navy).
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: _glassColors(dark, widget.tint, t),
+                            stops: const [0, 0.3],
+                          ),
                         ),
-                      ),
-                      child: Stack(
-                        children: [
-                          widget.child,
-                          if (press > 0)
-                            Positioned.fill(
-                              child: IgnorePointer(
-                                child: DecoratedBox(
-                                  decoration: BoxDecoration(
-                                    gradient: RadialGradient(
-                                      center: _touchAlignment(
-                                        constraints.biggest,
+                        child: Stack(
+                          children: [
+                            widget.child,
+                            if (press > 0)
+                              Positioned.fill(
+                                child: IgnorePointer(
+                                  child: DecoratedBox(
+                                    decoration: BoxDecoration(
+                                      gradient: RadialGradient(
+                                        center: _touchAlignment(
+                                          constraints.biggest,
+                                        ),
+                                        radius: 1.1,
+                                        colors: [
+                                          Colors.white
+                                              .withValues(alpha: 0.2 * press),
+                                          Colors.transparent,
+                                        ],
                                       ),
-                                      radius: 1.1,
-                                      colors: [
-                                        Colors.white
-                                            .withValues(alpha: 0.2 * press),
-                                        Colors.transparent,
-                                      ],
+                                      backgroundBlendMode: BlendMode.plus,
                                     ),
-                                    backgroundBlendMode: BlendMode.plus,
                                   ),
                                 ),
                               ),
-                            ),
-                        ],
-                      ),
+                          ],
+                        ),
                     );
                     if (widget.blurSigma > 0) {
+                      // blurSigma 0 = skip the filter layer ENTIRELY (not a
+                      // sigma-0 filter) — saves a saveLayer.
                       glass = BackdropFilter(
                         filter: ImageFilter.blur(
                           sigmaX: effectiveBlur + 6 * press,
@@ -227,13 +244,16 @@ class _GlassSurfaceState extends State<GlassSurface>
   }
 
   /// [0] = top-left glint, [1] = main scrim. Near-transparent by design:
-  /// every real user pushes transparency further than you expect.
+  /// every real user pushes transparency further than you expect. Vibrancy
+  /// curve: dark mode rests at ~8% navy and deepens to 18% over bright
+  /// content; light mode deepens the white scrim the brighter the backdrop.
   static List<Color> _glassColors(bool dark, Color? tint, double t) {
     if (tint != null) return [tint, tint];
     return dark
         ? [
             Colors.white.withValues(alpha: lerpDouble(0.02, 0.06, t)!),
-            const Color(0xFF101F33).withValues(alpha: lerpDouble(0.08, 0.18, t)!),
+            const Color(0xFF101F33)
+                .withValues(alpha: lerpDouble(0.08, 0.18, t)!),
           ]
         : [
             Colors.white.withValues(alpha: lerpDouble(0.12, 0.32, t)!),
@@ -245,6 +265,7 @@ class _GlassSurfaceState extends State<GlassSurface>
 /// Directional rim light: one stroked round-rect whose colour is a gradient
 /// from bright top-left to dark bottom-right, optionally with two faint
 /// magenta/cyan strokes for a chromatic-aberration hint (small lenses only).
+/// The brighter the backdrop (vibrancy), the brighter the whole rim.
 class GlassRimPainter extends CustomPainter {
   GlassRimPainter({
     required this.borderRadius,
@@ -266,6 +287,8 @@ class GlassRimPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1;
     if (chromatic) {
+      // Chromatic aberration: magenta outer, cyan inner, very faint — only
+      // visible under strong light.
       canvas.drawRRect(
         RRect.fromRectAndRadius(rect.deflate(-0.4), radius),
         Paint()

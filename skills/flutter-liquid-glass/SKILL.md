@@ -68,11 +68,18 @@ deeper scrim, stronger blur and a brighter rim. Full working sampler + bar in
 ### Glass capsule nav bar with a draggable selection bubble
 
 [`reference/examples/glass_nav_bar.dart`](reference/examples/glass_nav_bar.dart)
-is a complete drop-in: one bubble slides behind the tabs (tap = ease-out slide,
-drag = follows the finger, release = snaps to the nearest tab with fling
-velocity), spring press-swell, and the luminance sampler. `AnimatedAlign` +
-`Alignment(-1..1)` is all the "physics" a sliding bubble needs — **do not**
-build the bubble as its own moving `BackdropFilter` (see pitfalls #1/#2).
+is a complete drop-in and a **faithful clone of the bar that ships in the app
+this skill was extracted from** — the exact code users have validated on real
+devices: one bubble slides behind the tabs (tap = 260ms ease-out slide, drag =
+follows the finger with zero animation, release = snaps to the nearest tab with
+fling velocity), **press-and-hold anywhere swells the bubble from its cell to
+the FULL bar width** ("swallow the bar"), it bulges vertically against the
+capsule's rounded ends, and the bar samples backdrop luminance every 250ms for
+adaptive vibrancy. The parent's `currentIndex` is followed via
+`didUpdateWidget`. `AnimatedAlign` + `Alignment(-1..1)` is all the "physics" a
+sliding bubble needs — **do not** build the bubble as its own moving
+`BackdropFilter` (see pitfalls #1/#2) and **do not** read a raw
+`AnimationController.value` outside an `AnimatedBuilder` (pitfalls #10/#11).
 
 ## API cheat sheet
 
