@@ -14,6 +14,14 @@ Compose/AGSL-only), no platform channels.
 **Read [reference/pitfalls.md](reference/pitfalls.md) before writing any code.**
 Most of it is release-mode-only breakage that analyze cannot catch.
 
+**Paste the two reference files VERBATIM and wire like the demo.** Do not
+adapt the bar's internals — every "small improvement" to the Stack/clip/layer
+order has already broken in a real app (pitfalls #12/#13: pill escaping the
+capsule, vanishing pill, desynced page cross-fades). For the integration,
+copy [`reference/examples/demo_app.dart`](reference/examples/demo_app.dart)
+whole: a runnable app with the exact Scaffold wiring (`extendBody`,
+MediaQuery +76 padding, `RepaintBoundary` backdrop key, `IndexedStack` pages).
+
 ## The honest capability map (set expectations first)
 
 | Effect | Pure Flutter can? | How |

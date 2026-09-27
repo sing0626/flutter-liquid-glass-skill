@@ -147,3 +147,34 @@ The nav bar State owns two `AnimationController`s (bubble + press). With
 builds crash on the first frame**; release strips the assert and runs on, so
 your only clue is that debug/profile never boots while release "works".
 Use `TickerProviderStateMixin` whenever a State owns more than one controller.
+
+## 12. Rewriting the bubble layer = the pill escapes the capsule or vanishes
+
+Real integration failures, both impossible with the verbatim example:
+
+- **Pill paints OVER the rim and off the bar's edge** (worst at the last
+  tab). In the verbatim code the rim is the `CustomPaint` **foregroundPainter**
+  — always painted on top of everything inside the surface — and the pill is
+  `Positioned.fill` child #0 of the Stack INSIDE GlassSurface, whose
+  `Clip.antiAlias` contains the swallow bulge. If your copy can draw the pill
+  past the rim, the bubble layer was moved outside GlassSurface or reordered.
+- **Pill invisible at rest.** Note first: while pressed, the verbatim pill
+  swells to the FULL bar width and its border hugs the inner rim — that is
+  the swallow look, not a missing pill; release and it springs back onto the
+  selected tab. If no pill ever comes back, your bubble was deleted, covered
+  by an opaque sibling, or given a zero/negative width factor.
+
+Rules: paste `glass_nav_bar.dart` verbatim; the bubble stays child #0 and the
+tabs Row child #1 of that Stack; never `Clip.none`, never an opaque sibling
+between them, never a per-tab pill next to the sliding one (two indicators);
+wire the Scaffold exactly like `reference/examples/demo_app.dart`.
+
+## 13. The bar resolves instantly — pages must switch instantly too
+
+`onChanged` fires the moment a tap/drag resolves and the bubble settles in
+~260ms. If pages cross-fade through a `PageRoute` or a long
+`AnimatedSwitcher`, the page is still half-faded under an already-settled
+bubble and the whole thing reads as desynced. unimail uses
+`IndexedStack(index: currentIndex)` — instant, and it preserves each page's
+scroll position and state for free. Want animated page transitions? Keep them
+short and let the bar remain the source of truth for the index.
