@@ -71,7 +71,7 @@ Wrap your body in a `RepaintBoundary`, sample its average luminance on a timer,
 and feed the smoothed signal into `vibrancy:` — brighter content behind drives a
 deeper scrim, stronger blur and a brighter rim. Full working sampler + bar in
 [`reference/examples/glass_nav_bar.dart`](reference/examples/glass_nav_bar.dart).
-250–500 ms cadence is plenty; sample a 24 px-wide image, not the full frame.
+1000ms cadence is plenty; sample a 24 px-wide image, not the full frame.
 
 ### Glass capsule nav bar with a draggable selection bubble
 
@@ -80,14 +80,14 @@ is a complete drop-in and a **faithful clone of the bar that ships in the app
 this skill was extracted from** — the exact code users have validated on real
 devices: one bubble slides behind the tabs (tap = 260ms ease-out slide, drag =
 follows the finger with zero animation, release = snaps to the nearest tab with
-fling velocity), **press-and-hold anywhere swells the bubble from its cell to
-the FULL bar width** ("swallow the bar"), it bulges vertically against the
-capsule's rounded ends, and the bar samples backdrop luminance every 250ms for
-adaptive vibrancy. The parent's `currentIndex` is followed via
+fling velocity), **press-and-hold anywhere swells the bubble in place by 1.08×**,
+and the drag alignment is clamped to `[-1.0, 1.0]` so the bubble never leaves
+the tab zone into the stadium edges. The bar samples backdrop luminance every
+1000ms for adaptive vibrancy. The parent's `currentIndex` is followed via
 `didUpdateWidget`. `AnimatedAlign` + `Alignment(-1..1)` is all the "physics" a
 sliding bubble needs — **do not** build the bubble as its own moving
 `BackdropFilter` (see pitfalls #1/#2) and **do not** read a raw
-`AnimationController.value` outside an `AnimatedBuilder` (pitfalls #10/#11).
+`AnimationController.value` outside an `AnimatedBuilder` or `ScaleTransition` (pitfalls #10/#11).
 
 ## API cheat sheet
 
@@ -130,10 +130,9 @@ GlassSurface(
 8. A raw `AnimationController` spring repaints nothing by itself. If the build
    reads `controller.value` without an `AnimatedBuilder`, the bubble lags the
    tab highlight, teleports on vibrancy ticks, or strands mid-bar after a
-   cancelled drag (dialog steals the pointer). Every controller reader goes in
-   `AnimatedBuilder(animation: Listenable.merge([...]))`; follow external
-   `currentIndex` changes in `didUpdateWidget`; and a State with two
-   controllers needs `TickerProviderStateMixin` (see pitfalls.md #10/#11).
+   cancelled drag (dialog steals the pointer). Use `ScaleTransition` or
+   `AnimatedBuilder`; initialize from `widget.currentIndex`; and a State with
+   two controllers needs `TickerProviderStateMixin` (pitfalls.md #10/#11).
 
 ## Platform notes
 
@@ -148,8 +147,5 @@ GlassSurface(
 
 ## Where the pattern comes from
 
-Reverse-engineered from SimpMusic (Kyant0 `backdrop` Compose library:
-`layerBackdrop` source layer + `drawBackdrop` effect stack — vibrancy,
-colorControls, blur, lens; observe-only press; per-second luminance sampling)
-and re-expressed in pure Flutter, then hardened through user testing
-(transparency → no blur at all; ghosting; square frames; invisible bubbles).
+This implementation is distilled directly from unimail's production bottom bar,
+validated across real hardware devices.

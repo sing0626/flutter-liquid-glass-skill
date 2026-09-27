@@ -71,7 +71,8 @@ class AboveGlassBarFabLocation extends FloatingActionButtonLocation {
 - Floating `SnackBar`s read `MediaQuery`, so wrapping the body in
   `MediaQuery(data: mq.copyWith(padding: mq.padding.copyWith(bottom: mq.padding.bottom + 76)))`
   lifts them — and conveniently gives lists the extra bottom inset they need
-  to scroll their last item clear of the bar.
+  to scroll their last item clear of the bar. For fixed snackbars on sub-screens,
+  set `margin: const EdgeInsets.fromLTRB(16, 0, 16, 88)` so they clear the bar.
 
 ## 6. `RepaintBoundary.toImage()` hangs widget tests forever
 
@@ -85,6 +86,8 @@ For the luminance signal itself: average the whole thumbnail AND the pixels
 brighter than ~0.35, then average those two numbers. Pure averages stay pinned
 near zero in dark themes and the glass never reacts; the bright-region term is
 what makes a patch of light content move the bar.
+Sampling cadence: **1000ms is ideal**. 250ms was found to trigger periodic raster
+readback jank on real devices with large widget trees.
 
 ## 7. Transparency is a direction, not a destination
 
@@ -120,20 +123,22 @@ so the stadium corners never clip it.
 build method reads `controller.value` directly (e.g. `Align(alignment:
 Alignment(_bubbleX.value, 0))`) with no `AnimatedBuilder`/`ListenableBuilder`
 in between, the widget repaints **only when some unrelated `setState`
-happens** — a drag update, the 250ms vibrancy tick, any parent rebuild.
+happens** — a drag update, the vibrancy tick, any parent rebuild.
 
 Symptoms seen in a shipping app: the tab highlight switches instantly (its
 `setState` is right there in `onTap`) while the bubble lags behind, teleports
-in 250ms steps, or — worst case, when nothing else rebuilds (static page, a
+in steps, or — worst case, when nothing else rebuilds (static page, a
 dialog opening that steals the pointer) — **freezes mid-way between two tabs
 for seconds or forever** after a drag is released or cancelled. It looks like
 render ghosting; it is just a widget that never rebuilds.
 
-Fix: everything reading a controller value goes inside
-`AnimatedBuilder(animation: Listenable.merge([_bubbleX, _press]), ...)`.
-Then a cancelled drag's spring home *actually animates*, and the bubble can
-never strand. Related hardening, same failure family:
+Fix: use `ScaleTransition` or put controller readers inside an
+`AnimatedBuilder`. Then a cancelled drag's spring home *actually animates*,
+and the bubble can never strand. Related hardening, same failure family:
 
+- initialize internal state with `_currentIndex = widget.currentIndex;` so the
+  bar never ignores an initial non-zero index;
+- sample using `widget.backdropKey`, not an unattached local key;
 - the parent's `currentIndex` is the source of truth for what is selected —
   implement `didUpdateWidget` to follow external index changes (deep links,
   back button), or the bar keeps a stale private index forever;
@@ -156,13 +161,12 @@ Real integration failures, both impossible with the verbatim example:
   tab). In the verbatim code the rim is the `CustomPaint` **foregroundPainter**
   — always painted on top of everything inside the surface — and the pill is
   `Positioned.fill` child #0 of the Stack INSIDE GlassSurface, whose
-  `Clip.antiAlias` contains the swallow bulge. If your copy can draw the pill
-  past the rim, the bubble layer was moved outside GlassSurface or reordered.
-- **Pill invisible at rest.** Note first: while pressed, the verbatim pill
-  swells to the FULL bar width and its border hugs the inner rim — that is
-  the swallow look, not a missing pill; release and it springs back onto the
-  selected tab. If no pill ever comes back, your bubble was deleted, covered
-  by an opaque sibling, or given a zero/negative width factor.
+  `Clip.antiAlias` contains the swell. Crucially, the drag alignment must be
+  clamped to `[-1.0, 1.0]` (centers of the first and last tabs) so dragging
+  cannot force the bubble past the tabs into the stadium corners.
+- **Pill invisible at rest.** If no pill ever renders, your bubble was deleted,
+  covered by an opaque sibling, had its `heightFactor` omitted (pitfall #4),
+  or given a zero/negative width factor.
 
 Rules: paste `glass_nav_bar.dart` verbatim; the bubble stays child #0 and the
 tabs Row child #1 of that Stack; never `Clip.none`, never an opaque sibling
@@ -178,3 +182,12 @@ bubble and the whole thing reads as desynced. unimail uses
 `IndexedStack(index: currentIndex)` — instant, and it preserves each page's
 scroll position and state for free. Want animated page transitions? Keep them
 short and let the bar remain the source of truth for the index.
+
+## 14. Creating `CurvedAnimation` inline in `build()` leaks listeners
+
+`CurvedAnimation(parent: controller, ...)` attaches an `AnimationStatusListener`
+to its parent controller on creation. If created inline inside a `build()` method,
+every rebuild (drag updates, vibrancy ticks, state changes) registers another
+listener that is never cleaned up until the controller itself is disposed.
+Fix: instantiate `CurvedAnimation` once as a field in `State` (or `initState`),
+or drive with a reusable `CurveTween` which requires no listener cleanup.

@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:typed_data';
-import 'dart:ui' show ImageByteFormat, lerpDouble;
+import 'dart:ui' show ImageByteFormat;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
@@ -9,20 +9,20 @@ import 'package:flutter/rendering.dart';
 import '../glass_surface.dart';
 
 /// A glass capsule bottom bar — a faithful clone of the bar that ships in the
-/// production app this skill was extracted from (the "clear glass" capsule
-/// with the swallow-press selection bubble), wrapped in a reusable widget API.
+/// production app this skill was extracted from (the clear glass capsule
+/// with the in-place 1.08× swell selection bubble), wrapped in a reusable widget API.
 /// Pure Flutter; pairs with glass_surface.dart.
 ///
 /// Behaviour (all learned the hard way — see reference/pitfalls.md):
 /// - one bubble slides behind the tabs: tap = 260ms ease-out slide, drag =
 ///   follows the finger exactly (zero animation while dragging), release =
 ///   snaps to the nearest tab taking fling velocity into account
-/// - **press-and-hold anywhere makes the bubble swell from its cell to the
-///   FULL bar width** ("swallow the bar"), bulging vertically against the
-///   capsule's rounded ends; release springs it back onto the selected tab
-/// - the bar samples its backdrop's luminance every 250ms and feeds it to
-///   GlassSurface.vibrancy: near-invisible over dark content, picks up scrim
-///   + rim brightness over bright content
+/// - bubble drag alignment is clamped to [-1.0, 1.0] (the first and last tab
+///   centers), so it never slides out into the capsule's rounded stadium ends
+/// - press-and-hold anywhere swells the bubble in place by 1.08× with spring physics;
+///   release springs it back onto the selected tab
+/// - the bar samples its backdrop's luminance every 1000ms (1s is smooth without
+///   causing periodic raster jank) and feeds it to GlassSurface.vibrancy
 /// - the parent's `currentIndex` is the source of truth for WHAT is
 ///   selected: external page changes (deep links, back button) move the
 ///   bubble and highlight too via didUpdateWidget (pitfalls.md #10)
@@ -58,13 +58,19 @@ class GlassNavBar extends StatefulWidget {
 
 class _GlassNavBarState extends State<GlassNavBar>
     with TickerProviderStateMixin {
-  var _currentIndex = 0;
+  late int _currentIndex;
 
-  /// Spring progress of the press "swallow" (0 rest .. 1 fully swallowed).
+  /// Spring progress of the press swell (0 rest .. 1 fully swelled).
   late final AnimationController _bubblePress = AnimationController(
     vsync: this,
     lowerBound: 0,
     upperBound: 1,
+  );
+  late final Animation<double> _bubbleScale = Tween(begin: 1.0, end: 1.08).animate(
+    CurvedAnimation(
+      parent: _bubblePress,
+      curve: Curves.easeOutCubic,
+    ),
   );
   static final SpringDescription _spring =
       SpringDescription.withDampingRatio(mass: 1, ratio: 0.55, stiffness: 320);
@@ -80,16 +86,16 @@ class _GlassNavBarState extends State<GlassNavBar>
 
   /// Backdrop vibrancy signal (0 dark .. 1 bright), 0.5 = unknown.
   double _vibrancy = 0.5;
-  final _backdropKey = GlobalKey();
   Timer? _luminanceTimer;
 
   @override
   void initState() {
     super.initState();
+    _currentIndex = widget.currentIndex;
     // SimpMusic-style backdrop sampling: shrink the backdrop to a 24px-wide
-    // thumbnail every 250ms and average its relative luminance. Cheap; do NOT
-    // sample per-frame.
-    _luminanceTimer = Timer.periodic(const Duration(milliseconds: 250), (_) {
+    // thumbnail every 1000ms and average its relative luminance.
+    // 1s is smooth without raster readback jank.
+    _luminanceTimer = Timer.periodic(const Duration(milliseconds: 1000), (_) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _sampleLuminance());
     });
   }
@@ -111,7 +117,7 @@ class _GlassNavBarState extends State<GlassNavBar>
   }
 
   Future<void> _sampleLuminance() async {
-    final boundary = _backdropKey.currentContext?.findRenderObject();
+    final boundary = widget.backdropKey.currentContext?.findRenderObject();
     if (boundary is! RenderRepaintBoundary || !boundary.attached) return;
     try {
       final width = boundary.size.width;
@@ -204,62 +210,45 @@ class _GlassNavBarState extends State<GlassNavBar>
                               ? const Duration(milliseconds: 260)
                               : Duration.zero,
                           curve: Curves.easeOutCubic,
+                          // Clamp to [-1.0, 1.0] (first & last tab centers) so
+                          // dragging never pokes the bubble past the stadium edge.
                           alignment: Alignment(
-                            (_currentIndex + (_dragPx ?? 0) / tabWidth) /
+                            ((_currentIndex + (_dragPx ?? 0) / tabWidth) /
                                     (n - 1) *
                                     2 -
-                                1,
+                                1)
+                                .clamp(-1.0, 1.0),
                             0,
                           ),
-                          child: AnimatedBuilder(
-                            // REGRESSION GUARD (pitfalls.md #10): anything
-                            // reading an AnimationController value must sit
-                            // inside an AnimatedBuilder or it only repaints
-                            // on unrelated setStates.
-                            animation: _bubblePress,
-                            builder: (context, child) {
-                              // Press-and-hold "swallows the bar": the
-                              // bubble grows from its cell (2dp insets each
-                              // side) to the FULL bar width, its height
-                              // bulging into the capsule's rounded ends.
-                              // GlassSurface's clip keeps it contained.
-                              // Release springs it back onto the selection.
-                              final press = Curves.easeOutCubic
-                                  .transform(_bubblePress.value);
-                              final innerWidth = constraints.maxWidth;
-                              return FractionallySizedBox(
-                                widthFactor: lerpDouble(
-                                  1 / n - 4 / innerWidth,
-                                  1.0,
-                                  press,
+                          child: FractionallySizedBox(
+                            // heightFactor must be set or the pill collapses to 0 height.
+                            heightFactor: 1,
+                            widthFactor: 1 / n,
+                            child: ScaleTransition(
+                              key: const ValueKey('glass-bubble-scale'),
+                              // Press-and-hold swells the bubble in place by 1.08x.
+                              scale: _bubbleScale,
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 2,
                                 ),
-                                heightFactor: 1,
-                                child: Transform.scale(
-                                  scaleY: 1 + 0.1 * press,
-                                  child: Padding(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 2,
-                                    ),
-                                    child: DecoratedBox(
-                                      decoration: BoxDecoration(
-                                        color: dark
-                                            ? Colors.white
-                                                .withValues(alpha: 0.08)
-                                            : const Color(0xFFD9EAF8)
-                                                .withValues(alpha: 0.7),
-                                        borderRadius:
-                                            BorderRadius.circular(100),
-                                        border: Border.all(
-                                          color: Colors.white.withValues(
-                                            alpha: dark ? 0.35 : 0.85,
-                                          ),
-                                        ),
+                                child: DecoratedBox(
+                                  decoration: BoxDecoration(
+                                    color: dark
+                                        ? Colors.white.withValues(alpha: 0.14)
+                                        : const Color(0xFFD9EAF8)
+                                            .withValues(alpha: 0.85),
+                                    borderRadius:
+                                        BorderRadius.circular(100),
+                                    border: Border.all(
+                                      color: Colors.white.withValues(
+                                        alpha: dark ? 0.4 : 0.9,
                                       ),
                                     ),
                                   ),
                                 ),
-                              );
-                            },
+                              ),
+                            ),
                           ),
                         ),
                       ),
